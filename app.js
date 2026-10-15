@@ -1,9 +1,12 @@
-// MiniShare v2.2.0 P2W3 — static Web/PWA client (no secret in repository).
+// MiniShare v2.2.0 P2W3a — static Web/PWA client (no secret in repository).
 const API_BASE = 'https://br-still-hat-ao5nj8oh-miniapi.compute.c-2.ap-southeast-1.aws.neon.tech';
 const SESSION_STORAGE_KEY='minishare.web.session.p2w2';
 const STORAGE_BUDGET_BYTES = 5_000_000_000; // total project quota, not 50MB/file
 const PROXY_MAX_BYTES = 8 * 1024 * 1024;
-const state = { token: '', files: [], messages: [], usage: null, page: 'files', uploadsRunning: false, targetAttachment: false, pendingConfirm: null };
+const PREVIEW_TEXT_MAX = 6 * 1024 * 1024;
+const PREVIEW_DOCX_MAX = 12 * 1024 * 1024;
+const PREVIEW_BLOB_MAX = 36 * 1024 * 1024;
+const state = { token: '', files: [], messages: [], usage: null, page: 'files', uploadsRunning: false, targetAttachment: false, pendingConfirm: null, previewFileId: null, previewObjectUrl: null, previewEpoch: 0 };
 const $ = id => document.getElementById(id);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const icon = (name, size=18) => `<svg width="${size}" height="${size}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
@@ -20,6 +23,21 @@ const fileType = name => {
   return 'FILE';
 };
 const badge = name => {const type=fileType(name);return `<span class="file-badge ${type.toLowerCase()}">${escapeHtml(type)}</span>`;};
+// Chỉ hiện nút Xem cho định dạng trình duyệt xử lý được.
+function previewKind(file){
+  const ext=String(file?.name||'').split('.').pop().toLowerCase();
+  if(['png','jpg','jpeg','webp','gif','bmp'].includes(ext))return 'image';
+  if(ext==='pdf')return 'pdf';
+  if(['txt','md','log','csv','json','xml','yaml','yml','ini','sql'].includes(ext))return 'text';
+  if(ext==='docx')return 'docx'; // chỉ xem nội dung chữ, không bảo toàn bố cục Word
+  if(['mp4','webm','mov'].includes(ext))return 'video';
+  if(['mp3','m4a','aac','wav','ogg','flac'].includes(ext))return 'audio';
+  return null; // ZIP/APK/DOC cũ và tệp khác không có trình xem tích hợp
+}
+const previewAction=(file,scope='file')=>file?.status==='ready'&&previewKind(file)
+  ?`<button class="icon-button preview-action" data-${scope}-action="preview" data-id="${escapeHtml(file.id)}" aria-label="Xem trước ${escapeHtml(file.name)}" title="Xem trước">${icon('eye')}</button>`
+  :`<span class="preview-spacer" aria-hidden="true"></span>`;
+
 const fmtSize = bytes => {const n=Number(bytes)||0;return n>=1073741824?(n/1073741824).toFixed(1)+' GB':n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?(n/1024).toFixed(1)+' KB':n+' B';};
 const fmtTime = date => {const t=new Date(date);return Number.isFinite(t.getTime())?new Intl.DateTimeFormat('vi-VN',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}).format(t):'—';};
 const statusText = status => ({ready:'Đã đồng bộ trên Neon',uploading:'Đang chờ hoàn tất',deleting:'Đang xóa',delete_error:'Lỗi xóa — có thể thử lại'})[status]||status;
@@ -127,7 +145,7 @@ function renderFiles(){
   $('file-empty').querySelector('p').textContent=keyword?'Hãy thử từ khóa khác.':'Chọn hoặc kéo thả tệp vào đây để tải lên Neon.';
   $('file-rows').innerHTML=filtered.map(f=>{
     const ready=f.status==='ready';const time=fmtTime(f.updated_at||f.created_at);
-    return `<tr data-file-row="${escapeHtml(f.id)}"><td><div class="file-main">${badge(f.name)}<div class="file-info"><strong title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</strong><small class="${ready?'':'pending'}">${escapeHtml(statusText(f.status))}</small></div></div></td><td>${fmtSize(f.size)}</td><td>${escapeHtml(time)}</td><td><div class="file-actions"><button class="icon-button cyan" data-file-action="download" data-id="${escapeHtml(f.id)}" aria-label="Tải xuống ${escapeHtml(f.name)}" title="Tải xuống" ${ready?'':'disabled'}>${icon('download')}</button><button class="icon-button" data-file-action="attach" data-id="${escapeHtml(f.id)}" title="Đính kèm vào Chat" aria-label="Đính kèm ${escapeHtml(f.name)}" ${ready?'':'disabled'}>${icon('paperclip')}</button><button class="icon-button delete" data-file-action="delete" data-id="${escapeHtml(f.id)}" title="Xóa tệp khỏi Neon và tin liên quan" aria-label="Xóa ${escapeHtml(f.name)}">${icon('trash')}</button></div></td></tr>`;
+    return `<tr data-file-row="${escapeHtml(f.id)}"><td><div class="file-main">${badge(f.name)}<div class="file-info"><strong title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</strong><small class="${ready?'':'pending'}">${escapeHtml(statusText(f.status))}</small></div></div></td><td>${fmtSize(f.size)}</td><td>${escapeHtml(time)}</td><td><div class="file-actions">${previewAction(f)}<button class="icon-button cyan" data-file-action="download" data-id="${escapeHtml(f.id)}" aria-label="Tải xuống ${escapeHtml(f.name)}" title="Tải xuống" ${ready?'':'disabled'}>${icon('download')}</button><button class="icon-button" data-file-action="attach" data-id="${escapeHtml(f.id)}" title="Đính kèm vào Chat" aria-label="Đính kèm ${escapeHtml(f.name)}" ${ready?'':'disabled'}>${icon('paperclip')}</button><button class="icon-button delete" data-file-action="delete" data-id="${escapeHtml(f.id)}" title="Xóa tệp khỏi Neon và tin liên quan" aria-label="Xóa ${escapeHtml(f.name)}">${icon('trash')}</button></div></td></tr>`;
   }).join('');
 }
 function renderChat(){
@@ -138,7 +156,7 @@ function renderChat(){
     const id=escapeHtml(m.id),time=fmtTime(m.created_at);
     if(m.kind==='attachment'){
       const name=m.file_name||'Tệp đã bị xóa';
-      return `<div class="message-bubble attach-bubble" data-msg-id="${id}"><div class="attach-heading"><span>${icon('paperclip')} Tệp đính kèm</span><div class="message-actions"><button class="message-icon" data-msg-action="copy" data-id="${id}" title="Sao chép tên tệp" aria-label="Sao chép">${icon('copy',14)}</button></div></div><div class="attach-content">${badge(name)}<div class="attach-details"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small>${fmtSize(m.file_size)}</small></div><button class="icon-button cyan" data-msg-action="download" data-id="${id}" title="Tải tệp" aria-label="Tải tệp">${icon('download')}</button></div><div class="attach-button-row" style="justify-content:flex-end;margin-top:9px"><button class="attach-danger" data-msg-action="delete-message" data-id="${id}">Xóa tin</button><button class="attach-danger" data-msg-action="delete-file" data-id="${id}">Xóa tệp</button></div><div class="message-time">${escapeHtml(time)}</div></div>`;
+      return `<div class="message-bubble attach-bubble" data-msg-id="${id}"><div class="attach-heading"><span>${icon('paperclip')} Tệp đính kèm</span><div class="message-actions"><button class="message-icon" data-msg-action="copy" data-id="${id}" title="Sao chép tên tệp" aria-label="Sao chép">${icon('copy',14)}</button></div></div><div class="attach-content">${badge(name)}<div class="attach-details"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small>${fmtSize(m.file_size)}</small></div>${(state.files.find(f=>f.id===m.file_id)&&previewKind(state.files.find(f=>f.id===m.file_id))) ? `<button class="icon-button preview-action" data-msg-action="preview" data-id="${id}" title="Xem trước" aria-label="Xem trước tệp đính kèm">${icon('eye')}</button>` : ''}<button class="icon-button cyan" data-msg-action="download" data-id="${id}" title="Tải tệp" aria-label="Tải tệp">${icon('download')}</button></div><div class="attach-button-row" style="justify-content:flex-end;margin-top:9px"><button class="attach-danger" data-msg-action="delete-message" data-id="${id}">Xóa tin</button><button class="attach-danger" data-msg-action="delete-file" data-id="${id}">Xóa tệp</button></div><div class="message-time">${escapeHtml(time)}</div></div>`;
     }
     return `<div class="message-bubble" data-msg-id="${id}"><div class="message-row"><div class="message-body">${escapeHtml(m.text||'')}</div><div class="message-actions"><button class="message-icon" data-msg-action="copy" data-id="${id}" title="Sao chép" aria-label="Sao chép tin nhắn">${icon('copy',14)}</button><button class="message-icon" data-msg-action="delete-message" data-id="${id}" title="Xóa tin" aria-label="Xóa tin nhắn">${icon('close',14)}</button></div></div><div class="message-time">${escapeHtml(time)}</div></div>`;
   }).join('');
@@ -151,12 +169,26 @@ function renderAttachList(){
 }
 function showAttachmentPicker(){if(!state.token){showAuth();return;}$('attach-search').value='';renderAttachList();$('attach-modal').hidden=false;setTimeout(()=>$('attach-search').focus(),30);}
 function hideAttachmentPicker(){ $('attach-modal').hidden=true; }
-function askDelete(text){
+function askConfirm(text,{mode='delete',title='Xác nhận xóa',yesLabel='Xóa'}={}){
   if(state.pendingConfirm)return Promise.resolve(false);
-  $('confirm-text').textContent=text;$('confirm-modal').hidden=false;
+  $('confirm-title').textContent=title;
+  $('confirm-text').textContent=text;
+  $('confirm-yes').textContent=yesLabel;
+  $('confirm-yes').className=`button ${mode==='upload'?'primary':'danger'}`;
+  $('confirm-icon').classList.toggle('upload-warning',mode==='upload');
+  $('confirm-icon-use').setAttribute('href',mode==='upload'?'#i-alert':'#i-trash');
+  $('confirm-modal').hidden=false;
   return new Promise(resolve=>state.pendingConfirm=resolve);
 }
-function resolveDelete(ok){const resolver=state.pendingConfirm;state.pendingConfirm=null;$('confirm-modal').hidden=true;if(resolver)resolver(ok);}
+const askDelete=text=>askConfirm(text);
+const askUploadWarning=name=>askConfirm(`Tệp “${name}” có tên gợi ý có thể chứa mật khẩu hoặc token. Bạn vẫn muốn tải tệp này lên Neon Storage?`,{
+  mode:'upload',title:'Cảnh báo trước khi tải lên',yesLabel:'Vẫn tải lên'
+});
+function resolveDelete(ok){
+  const resolver=state.pendingConfirm;state.pendingConfirm=null;
+  $('confirm-modal').hidden=true;
+  if(resolver)resolver(ok);
+}
 async function deleteMessage(msg){
   if(!await askDelete('Chỉ xóa tin nhắn này? Tệp đính kèm vẫn còn trên Neon.'))return;
   try{await request(`/v1/messages/${encodeURIComponent(msg.id)}`,{method:'DELETE'});await loadAll();toast('Đã xóa tin nhắn, giữ nguyên tệp.');}
@@ -182,6 +214,133 @@ async function sendAttachment(id){
   catch(e){toast(e.message,'bad');}
 }
 async function copyText(text){try{await navigator.clipboard.writeText(text);toast('Đã sao chép.');}catch{toast('Trình duyệt không cho truy cập clipboard.','bad');}}
+
+// Xem trước từ private Storage: mỗi lần mở xin URL ký tạm thời, không làm public bucket.
+function closePreview(){
+  ++state.previewEpoch;
+  $('preview-modal').hidden=true;
+  $('preview-body').replaceChildren();
+  state.previewFileId=null;
+  if(state.previewObjectUrl){URL.revokeObjectURL(state.previewObjectUrl);state.previewObjectUrl=null;}
+}
+function previewInfo(message){
+  const p=document.createElement('p');p.className='preview-info';p.textContent=message;
+  $('preview-body').replaceChildren(p);
+}
+async function previewSource(file){
+  const result=await request(`/v1/files/${encodeURIComponent(file.id)}/download`);
+  if(!result.download_url)throw new Error('API chưa cấp URL xem tệp.');
+  return result.download_url;
+}
+async function fetchPreviewData(file,url,maxBytes){
+  if(Number(file.size)>maxBytes)throw new Error('Tệp quá lớn để xem nội dung trực tiếp. Hãy tải về để mở trên máy.');
+  try{
+    const res=await fetch(url,{mode:'cors',credentials:'omit',cache:'no-store'});
+    if(!res.ok)throw new Error(`Storage HTTP ${res.status}`);
+    const data=await res.blob();
+    if(data.size>maxBytes)throw new Error('Nội dung xem trước vượt mức an toàn.');
+    return data;
+  }catch(err){
+    // CORS GET của S3 có thể bị hạn chế. Thử đường Function cho tệp nhỏ.
+    if(Number(file.size)>PROXY_MAX_BYTES)throw err;
+    const res=await fetch(`${API_BASE}/v1/files/${encodeURIComponent(file.id)}/content`,{
+      headers:{Authorization:`Bearer ${state.token}`},credentials:'omit',mode:'cors',cache:'no-store'
+    });
+    if(!res.ok)throw new Error(`Không lấy được nội dung tệp (HTTP ${res.status}).`);
+    const data=await res.blob();
+    if(data.size>maxBytes)throw new Error('Nội dung xem trước vượt mức an toàn.');
+    return data;
+  }
+}
+// DOCX: giải nén riêng word/document.xml bằng API trình duyệt (không gửi file sang dịch vụ khác).
+// Đây là bản xem chữ đơn giản; định dạng/bảng/hình trong Word có thể không giữ nguyên.
+async function docxToText(blob){
+  const buf=await blob.arrayBuffer(), v=new DataView(buf);
+  let end=-1;
+  for(let i=buf.byteLength-22;i>=Math.max(0,buf.byteLength-65557);i--){
+    if(v.getUint32(i,true)===0x06054b50){end=i;break;}
+  }
+  if(end<0)throw new Error('Không tìm thấy cấu trúc DOCX hợp lệ.');
+  const count=v.getUint16(end+10,true), offset=v.getUint32(end+16,true);
+  let p=offset;
+  for(let i=0;i<count;i++){
+    if(p+46>buf.byteLength||v.getUint32(p,true)!==0x02014b50)break;
+    const method=v.getUint16(p+10,true),size=v.getUint32(p+20,true),unpacked=v.getUint32(p+24,true);
+    const len=v.getUint16(p+28,true),extra=v.getUint16(p+30,true),comment=v.getUint16(p+32,true);
+    const name=new TextDecoder().decode(new Uint8Array(buf,p+46,len));
+    if(name==='word/document.xml'){
+      if(unpacked>8*1024*1024)throw new Error('Nội dung DOCX quá lớn để xem trước.');
+      const local=v.getUint32(p+42,true);
+      if(v.getUint32(local,true)!==0x04034b50)throw new Error('DOCX bị lỗi cấu trúc ZIP.');
+      const start=local+30+v.getUint16(local+26,true)+v.getUint16(local+28,true);
+      if(start+size>buf.byteLength)throw new Error('DOCX thiếu dữ liệu.');
+      let xmlBytes=new Uint8Array(buf,start,size);
+      if(method===8){
+        if(typeof DecompressionStream==='undefined')throw new Error('Trình duyệt chưa hỗ trợ xem DOCX; hãy tải về.');
+        const stream=new Blob([xmlBytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+        xmlBytes=new Uint8Array(await new Response(stream).arrayBuffer());
+      }else if(method!==0)throw new Error('Định dạng nén DOCX không được hỗ trợ.');
+      if(xmlBytes.byteLength>8*1024*1024)throw new Error('DOCX quá lớn để xem trước.');
+      const doc=new DOMParser().parseFromString(new TextDecoder().decode(xmlBytes),'application/xml');
+      if(doc.querySelector('parsererror'))throw new Error('Nội dung XML của DOCX không hợp lệ.');
+      const lines=[...doc.getElementsByTagName('*')].filter(el=>el.localName==='p').map(el=>
+        [...el.getElementsByTagName('*')].filter(n=>n.localName==='t').map(n=>n.textContent).join('')
+      );
+      return lines.join('\n').trim()||'(Tệp Word không có đoạn văn bản để hiển thị.)';
+    }
+    p+=46+len+extra+comment;
+  }
+  throw new Error('Không có nội dung Word (word/document.xml).');
+}
+async function previewFile(file){
+  const kind=previewKind(file);
+  if(!file||file.status!=='ready'||!kind)return;
+  closePreview();
+  const epoch=state.previewEpoch;
+  state.previewFileId=file.id;
+  $('preview-name').textContent=file.name;
+  $('preview-type').textContent=`${fmtSize(file.size)} • Xem trước trên Web`;
+  $('preview-modal').hidden=false;
+  previewInfo('Đang chuẩn bị xem trước...');
+  try{
+    const url=await previewSource(file);
+    if(epoch!==state.previewEpoch)return;
+    const content=$('preview-body');
+    const big=Number(file.size)>PREVIEW_BLOB_MAX;
+    if(kind==='video'||kind==='audio'){
+      const media=document.createElement(kind==='video'?'video':'audio');
+      media.controls=true;media.preload='metadata';media.src=url;
+      media.className='preview-media';
+      content.replaceChildren(media);
+    }else if((kind==='image'||kind==='pdf') && big){
+      // Browser xử lý qua liên kết ký trực tiếp, tránh nạp tệp lớn vào RAM JS.
+      const view=document.createElement(kind==='image'?'img':'iframe');
+      view.className=kind==='image'?'preview-image':'preview-pdf';
+      view.src=url;
+      view.title=`Xem trước ${file.name}`;
+      view.referrerPolicy='no-referrer';
+      content.replaceChildren(view);
+    }else{
+      const blob=await fetchPreviewData(file,url,
+        kind==='text'?PREVIEW_TEXT_MAX:kind==='docx'?PREVIEW_DOCX_MAX:PREVIEW_BLOB_MAX);
+      if(epoch!==state.previewEpoch)return;
+      if(kind==='text'||kind==='docx'){
+        const pre=document.createElement('pre');pre.className='preview-text';
+        pre.textContent=kind==='docx'?await docxToText(blob):await blob.text();
+        if(epoch!==state.previewEpoch)return;
+        content.replaceChildren(pre);
+        if(kind==='docx')$('preview-type').textContent=`${fmtSize(file.size)} • Word: xem nội dung chữ (không giữ định dạng)`;
+      }else{
+        const objectUrl=URL.createObjectURL(blob);
+        state.previewObjectUrl=objectUrl;
+        const view=document.createElement(kind==='image'?'img':'iframe');
+        view.className=kind==='image'?'preview-image':'preview-pdf';
+        view.src=objectUrl;view.title=`Xem trước ${file.name}`;
+        content.replaceChildren(view);
+      }
+    }
+  }catch(e){if(epoch===state.previewEpoch)previewInfo(`Không thể xem trước: ${e.message}. Bạn có thể tải tệp về máy.`);}
+}
 
 // Download through the authenticated Function proxy (CORS-safe, preserves filename).
 // Fallback to the signed link for an older backend that lacks GET /content.
@@ -238,7 +397,7 @@ async function uploadOne(file){
   if(file.size>STORAGE_BUDGET_BYTES){throw new Error(`“${file.name}” lớn hơn tổng ngân sách Storage 5 GB.`);}
   // Backend checks remaining quota atomically; do not trust stale browser totals.
   if(/(^\.env|token|password|secret|\.pem$|\.key$)/i.test(file.name)){
-    const ok=await askDelete(`“${file.name}” có thể chứa mật khẩu hoặc token. Vẫn tải tệp này lên Neon?`);if(!ok)return null;
+    const ok=await askUploadWarning(file.name);if(!ok)return null;
   }
   const init=await request('/v1/files/init',{method:'POST',json:{name:file.name,size:file.size,mime:file.type||'application/octet-stream'}});
   const id=init.file_id;
@@ -290,14 +449,17 @@ $('file-picker').addEventListener('change',e=>uploadFiles(e.target.files,state.t
 $('chat-attach').addEventListener('click',showAttachmentPicker);$('close-attach').addEventListener('click',hideAttachmentPicker);$('attach-cancel').addEventListener('click',hideAttachmentPicker);$('attach-search').addEventListener('input',renderAttachList);
 $('attach-upload').addEventListener('click',()=>{hideAttachmentPicker();openPicker(true);});
 $('attach-list').addEventListener('click',e=>{const btn=e.target.closest('[data-attach-id]');if(btn)sendAttachment(btn.dataset.attachId);});
-$('file-rows').addEventListener('click',async e=>{const button=e.target.closest('[data-file-action]');if(!button)return;const file=state.files.find(f=>f.id===button.dataset.id);if(!file)return;if(button.dataset.fileAction==='download')await downloadFile(file);if(button.dataset.fileAction==='attach')await sendAttachment(file.id);if(button.dataset.fileAction==='delete')await deleteFile(file);});
-$('chat-messages').addEventListener('click',async e=>{const button=e.target.closest('[data-msg-action]');if(!button)return;const m=state.messages.find(x=>x.id===button.dataset.id);if(!m)return;switch(button.dataset.msgAction){case'copy':await copyText(m.kind==='attachment'?m.file_name||'':m.text||'');break;case'delete-message':await deleteMessage(m);break;case'delete-file':await deleteFile(state.files.find(f=>f.id===m.file_id));break;case'download':await downloadFile(state.files.find(f=>f.id===m.file_id));break;}});
+$('file-rows').addEventListener('click',async e=>{const button=e.target.closest('[data-file-action]');if(!button)return;const file=state.files.find(f=>f.id===button.dataset.id);if(!file)return;if(button.dataset.fileAction==='preview')await previewFile(file);if(button.dataset.fileAction==='download')await downloadFile(file);if(button.dataset.fileAction==='attach')await sendAttachment(file.id);if(button.dataset.fileAction==='delete')await deleteFile(file);});
+$('chat-messages').addEventListener('click',async e=>{const button=e.target.closest('[data-msg-action]');if(!button)return;const m=state.messages.find(x=>x.id===button.dataset.id);if(!m)return;switch(button.dataset.msgAction){case'copy':await copyText(m.kind==='attachment'?m.file_name||'':m.text||'');break;case'delete-message':await deleteMessage(m);break;case'delete-file':await deleteFile(state.files.find(f=>f.id===m.file_id));break;case'preview':await previewFile(state.files.find(f=>f.id===m.file_id));break;case'download':await downloadFile(state.files.find(f=>f.id===m.file_id));break;}});
 $('send-message').addEventListener('click',sendMessage);$('message-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendMessage();}});$('message-input').addEventListener('input',e=>{e.target.style.height='46px';e.target.style.height=Math.min(115,Math.max(46,e.target.scrollHeight))+'px';});
 $('change-token').addEventListener('click',()=>{clearWebSession();state.files=[];state.messages=[];renderFiles();renderChat();showAuth();});$('disconnect').addEventListener('click',()=>{clearWebSession();state.files=[];state.messages=[];renderFiles();renderChat();showAuth();toast('Đã đăng xuất.');});
 $('auth-form').addEventListener('submit',async e=>{e.preventDefault();const btn=$('auth-submit');btn.disabled=true;$('auth-error').hidden=true;try{await connect($('auth-password').value);}catch(err){$('auth-error').textContent=err.message;$('auth-error').hidden=false;}finally{btn.disabled=false;}});
+$('preview-close').addEventListener('click',closePreview);
+$('preview-modal').addEventListener('click',e=>{if(e.target===$('preview-modal'))closePreview();});
+$('preview-download').addEventListener('click',async()=>{const file=state.files.find(f=>f.id===state.previewFileId);if(file){closePreview();await downloadFile(file);}});
 $('confirm-cancel').addEventListener('click',()=>resolveDelete(false));$('confirm-yes').addEventListener('click',()=>resolveDelete(true));
 $('confirm-modal').addEventListener('click',e=>{if(e.target===$('confirm-modal'))resolveDelete(false);});$('attach-modal').addEventListener('click',e=>{if(e.target===$('attach-modal'))hideAttachmentPicker();});
-window.addEventListener('keydown',e=>{if(e.key==='Escape'){if(state.pendingConfirm)resolveDelete(false);else if(!$('attach-modal').hidden)hideAttachmentPicker();}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();switchPage('files');$('file-search').focus();}});
+window.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('preview-modal').hidden)closePreview();else if(state.pendingConfirm)resolveDelete(false);else if(!$('attach-modal').hidden)hideAttachmentPicker();}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();switchPage('files');$('file-search').focus();}});
 let dropDepth=0;
 window.addEventListener('dragenter',e=>{if([...e.dataTransfer?.types||[]].includes('Files')){dropDepth++;e.preventDefault();$('drop-overlay').hidden=false;}});
 window.addEventListener('dragover',e=>{if([...e.dataTransfer?.types||[]].includes('Files'))e.preventDefault();});

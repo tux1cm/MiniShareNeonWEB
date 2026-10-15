@@ -23,3 +23,25 @@
 .auth-modal .modal-footnote{text-align:center;font-size:11px;margin-top:22px;color:#91a5c1;}
 
 #auth-modal{background:#0c121b;backdrop-filter:none;}
+
+/* P2W3a: xác nhận upload khác hẳn xác nhận xóa; xem trước file private. */
+.confirm-icon.upload-warning{background:#113c56;color:#3bdaef}
+.confirm-icon.upload-warning svg{width:31px;height:31px}
+.preview-spacer{display:inline-block;width:32px;height:32px;flex:0 0 32px}
+.icon-button.preview-action{color:#81d5f9}
+.icon-button.preview-action:hover{color:white;border-color:#408aad;background:#225173}
+.preview-modal{width:min(990px,96vw);padding:0;max-height:min(92vh,920px);display:flex;flex-direction:column;overflow:hidden}
+.preview-heading{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;padding:19px 22px;border-bottom:1px solid var(--line)}
+.preview-heading-text{min-width:0}
+.preview-heading h2{margin:0 0 8px;font-size:18px;color:var(--txt)}
+.preview-heading strong{font-size:14px;display:block;overflow-wrap:anywhere}
+.preview-heading small{display:block;color:var(--mute);margin-top:5px;font-size:12px}
+.preview-body{background:#0b1c31;flex:1;min-height:180px;display:flex;align-items:center;justify-content:center;overflow:auto;max-height:calc(92vh - 162px);padding:14px}
+.preview-info{font-size:14px;color:var(--mute);line-height:1.6;text-align:center;max-width:650px}
+.preview-image{max-width:100%;max-height:calc(92vh - 208px);object-fit:contain;border-radius:5px}
+.preview-pdf{width:100%;height:clamp(360px,69vh,730px);border:0;background:white}
+.preview-text{width:100%;height:100%;max-height:65vh;min-height:280px;margin:0;padding:17px 18px;color:#eff8ff;background:#0b2039;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;font:13px/1.65 Consolas,'Courier New',monospace;border-radius:8px}
+.preview-media{max-height:65vh;max-width:100%;width:100%;min-width:0}
+.preview-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 21px;border-top:1px solid var(--line);color:var(--mute);font-size:12px}
+.preview-footer .button{min-height:40px}
+@media(max-width:760px){.preview-heading{padding:14px}.preview-body{padding:7px;max-height:calc(90vh - 174px)}.preview-pdf{height:65vh}.preview-footer{padding:10px 13px;flex-wrap:wrap}.preview-footer span{font-size:11px}.file-actions{gap:2px}}

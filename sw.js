@@ -1,5 +1,5 @@
 // Static shell only; NEVER cache API calls or bearer tokens.
-const CACHE='minishare-p2w3-github-static-v1';
+const CACHE='minishare-p2w3a-static-v1';
 const ASSETS=['./','./index.html','./app.js','./style.css','./assets/minishare.ico','./assets/minishare.png','./manifest.webmanifest'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
