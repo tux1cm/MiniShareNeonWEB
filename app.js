@@ -1,4 +1,4 @@
-// MiniShare v2.2.0 P2W3a — static Web/PWA client (no secret in repository).
+// MiniShare v2.2.0 P2W3b — static Web/PWA client (no secret in repository).
 const API_BASE = 'https://br-still-hat-ao5nj8oh-miniapi.compute.c-2.ap-southeast-1.aws.neon.tech';
 const SESSION_STORAGE_KEY='minishare.web.session.p2w2';
 const STORAGE_BUDGET_BYTES = 5_000_000_000; // total project quota, not 50MB/file
@@ -342,43 +342,100 @@ async function previewFile(file){
   }catch(e){if(epoch===state.previewEpoch)previewInfo(`Không thể xem trước: ${e.message}. Bạn có thể tải tệp về máy.`);}
 }
 
-// Download through the authenticated Function proxy (CORS-safe, preserves filename).
-// Fallback to the signed link for an older backend that lacks GET /content.
+// Download files using a SAME-ORIGIN blob: URL or a browser file stream.
+// The signed S3 URL belongs to a different origin; Chrome ignores <a download>
+// on cross-origin links and saves its internal object key instead of the file name.
+// File System Access API streams large files directly to disk on Chrome/Edge.
+const STREAM_TO_DISK_BYTES = 256 * 1024 * 1024;
+function safeDownloadName(filename){
+  let name=String(filename||'download').replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g,'_').replace(/[ .]+$/g,'');
+  if(!name||name==='.'||name==='..')name='download';
+  if(/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name))name='_'+name;
+  return name;
+}
+function downloadMime(file){
+  const ext=String(file.name||'').split('.').pop().toLowerCase();
+  const mime={
+    mp4:'video/mp4',mov:'video/quicktime',mkv:'video/x-matroska',webm:'video/webm',avi:'video/x-msvideo',
+    mp3:'audio/mpeg',wav:'audio/wav',m4a:'audio/mp4',ogg:'audio/ogg',flac:'audio/flac',
+    png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',bmp:'image/bmp',svg:'image/svg+xml',heic:'image/heic',heif:'image/heif',
+    pdf:'application/pdf',txt:'text/plain',log:'text/plain',md:'text/markdown',csv:'text/csv',json:'application/json',xml:'application/xml',
+    html:'text/html',htm:'text/html',css:'text/css',js:'text/javascript',
+    doc:'application/msword',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls:'application/vnd.ms-excel',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt:'application/vnd.ms-powerpoint',pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    zip:'application/zip',rar:'application/vnd.rar','7z':'application/x-7z-compressed',
+    apk:'application/vnd.android.package-archive',exe:'application/vnd.microsoft.portable-executable'
+  };
+  return mime[ext]||file.mime||'application/octet-stream';
+}
 async function downloadFile(file){
   if(!file||file.status!=='ready')return;
-  const name=String(file.name||'download').replace(/[\\/:*?"<>|\x00-\x1f]/g,'_');
-  showProgress(`Đang tải ${name}`,3);
+  const name=safeDownloadName(file.name), expected=Number(file.size)||0;
+  let fileHandle=null,writable=null;
   try{
-    // For large files use a signed direct S3 URL, avoiding in-memory Blob and Function egress.
-    if(Number(file.size)>8*1024*1024){
-      const signed=await request(`/v1/files/${encodeURIComponent(file.id)}/download`);
-      if(!signed.download_url)throw new Error('API không cấp liên kết tải xuống.');
-      const link=document.createElement('a');link.href=signed.download_url;link.target='_blank';link.rel='noopener noreferrer';link.download=name;
-      document.body.append(link);link.click();link.remove();
-      toast('Đã mở tải xuống trực tiếp. Nếu trình duyệt mở xem trước, chọn Tải xuống.');return;
+    // Must invoke picker during the actual user click (before the first network await).
+    if(expected>STREAM_TO_DISK_BYTES && typeof window.showSaveFilePicker==='function'){
+      fileHandle=await window.showSaveFilePicker({suggestedName:name});
     }
-    const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),120000);
+    showProgress(`Đang tải ${name}`,0);
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),Math.max(180000,Math.min(3600000,expected/15000)));
     let res;
-    try{res=await fetch(`${API_BASE}/v1/files/${encodeURIComponent(file.id)}/content`,{headers:{Authorization:`Bearer ${state.token}`},mode:'cors',cache:'no-store',signal:controller.signal});}
-    finally{clearTimeout(timer);}
-    if(res.status===404){
-      hideProgress();
-      const signed=await request(`/v1/files/${encodeURIComponent(file.id)}/download`);
-      if(!signed.download_url)throw new Error('API không trả URL tải xuống.');
-      const a=document.createElement('a');a.href=signed.download_url;a.target='_blank';a.rel='noopener noreferrer';a.download=name;document.body.append(a);a.click();a.remove();
-      toast('Đã mở liên kết tải. Nếu trình duyệt hiển thị xem trước, chọn Tải xuống ở tab mới.');return;
+    try{
+      if(expected && expected<=PROXY_MAX_BYTES){
+        res=await fetch(`${API_BASE}/v1/files/${encodeURIComponent(file.id)}/content`,{
+          headers:{Authorization:`Bearer ${state.token}`},mode:'cors',cache:'no-store',signal:controller.signal
+        });
+        if(res.status===404)res=null; // older Function: use signed Storage GET
+      }
+      if(!res){
+        const signed=await request(`/v1/files/${encodeURIComponent(file.id)}/download`);
+        if(!signed.download_url||!signed.download_url.startsWith('https://'))throw new Error('API không cấp URL HTTPS tải xuống.');
+        // Crucial: fetch the bytes, NOT click the cross-origin signed URL.
+        res=await fetch(signed.download_url,{
+          mode:'cors',credentials:'omit',cache:'no-store',signal:controller.signal
+        });
+      }
+      if(!res.ok)throw new Error(`HTTP ${res.status} khi tải tệp`);
+      const parts=[];let total=0;
+      if(fileHandle)writable=await fileHandle.createWritable();
+      const reader=res.body?.getReader();
+      if(reader){
+        for(;;){
+          const {value,done}=await reader.read();
+          if(done)break;
+          total+=value.byteLength;
+          if(expected&&total>expected)throw new Error('Dữ liệu vượt dung lượng lưu trên Neon.');
+          if(writable)await writable.write(value);
+          else parts.push(value);
+          showProgress(`Đang tải ${name}`,expected?Math.min(99,100*total/expected):50);
+        }
+      }else{
+        const chunk=new Uint8Array(await res.arrayBuffer());total=chunk.length;
+        if(writable)await writable.write(chunk);else parts.push(chunk);
+      }
+      if(expected>0&&total!==expected)throw new Error(`Dung lượng file không đúng (${total}/${expected} byte).`);
+      if(writable){await writable.close();writable=null;}
+      else{
+        const blob=new Blob(parts,{type:downloadMime(file)});
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement('a');a.href=url;a.download=name;
+        document.body.append(a);a.click();a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),60000);
+      }
+      showProgress(`Đã tải ${name}`,100);
+      toast(`Đã tải ${name}`);
+    }finally{clearTimeout(timeout);}
+  }catch(e){
+    if(writable){try{await writable.abort();}catch{}}
+    if(e.name!=='AbortError'){
+      const msg=e instanceof TypeError&&expected>PROXY_MAX_BYTES
+        ?'Storage chưa cho phép Web đọc file lớn qua CORS GET. Kiểm tra cấu hình CORS của bucket Neon.'
+        :e.message;
+      toast('Tải xuống thất bại: '+msg,'bad',7500);
     }
-    if(!res.ok)throw new Error(`HTTP ${res.status} khi tải tệp`);
-    const length=Number(res.headers.get('content-length'))||Number(file.size)||0;
-    const reader=res.body?.getReader();const chunks=[];let total=0;
-    if(reader){for(;;){const{done,value}=await reader.read();if(done)break;chunks.push(value);total+=value.byteLength;if(length)showProgress(`Đang tải ${name}`,Math.min(99,total/length*100));}}
-    else{const bytes=new Uint8Array(await res.arrayBuffer());chunks.push(bytes);total=bytes.length;}
-    if(Number(file.size)>0 && total!==Number(file.size))throw new Error('Tệp tải về không đúng dung lượng.');
-    const url=URL.createObjectURL(new Blob(chunks,{type:file.mime||'application/octet-stream'}));
-    const a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
-    toast(`Đã tải ${name}`);
-  }catch(e){toast('Tải xuống thất bại: '+e.message,'bad',7500);}
-  finally{hideProgress();}
+  }finally{hideProgress();}
 }
 
 function showProgress(title,percent){$('progress-box').hidden=false;$('progress-title').textContent=title;$('progress-percent').textContent=`${Math.max(0,Math.min(100,Math.round(percent)))}%`;$('progress-bar').style.width=`${Math.max(0,Math.min(100,percent))}%`;}
